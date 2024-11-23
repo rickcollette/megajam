@@ -5,7 +5,7 @@ go 1.22.4
 require (
 	fyne.io/fyne/v2 v2.5.2
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
-	github.com/faiface/beep v1.1.0
+	github.com/rickcollette/megasound v0.0.0-20241123163038-0e6972b9d174
 )
 
 require (

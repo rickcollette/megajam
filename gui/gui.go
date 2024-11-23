@@ -134,7 +134,7 @@ func CreateGUI() {
         // This requires accessing the selectedTrackIndex received from the channel
         // We'll set up a goroutine to listen to the channel
     })
-    browserSection, selectedTrackChan := createEnhancedBrowserSection(currentPlaylist, addTrackButton, removeTrackButton, myApp, myWindow)
+    browserSection, selectedTrackChan := createEnhancedBrowserSection(currentPlaylist, addTrackButton, removeTrackButton, myWindow)
 
     // Handle Remove Track Button Click
     removeTrackButton.OnTapped = func() {
