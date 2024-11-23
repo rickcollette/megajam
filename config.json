@@ -1,0 +1,15 @@
+{
+    "theme": {
+      "background_color": "#1e1e1e",
+      "text_color": "#ffffff",
+      "button_color": "#007acc",
+      "highlight_color": "#ffa500",
+      "waveform_color": "#ff0000",
+      "knob_color": "#00ff00"
+    },
+    "layout": {
+      "window_width": 1366,
+      "window_height": 768
+    }
+  }
+  

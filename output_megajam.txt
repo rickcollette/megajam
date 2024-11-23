@@ -1,0 +1,1093 @@
+
+/home/megalith/megajam/config/config.go:
+```go
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"image/color"
+	"os"
+	"strings"
+)
+
+type ThemeConfig struct {
+	BackgroundColor string `json:"background_color"`
+	TextColor       string `json:"text_color"`
+	ButtonColor     string `json:"button_color"`
+	HighlightColor  string `json:"highlight_color"`
+	WaveformColor   string `json:"waveform_color"`
+	KnobColor       string `json:"knob_color"`
+}
+
+type LayoutConfig struct {
+	WindowWidth  int `json:"window_width"`
+	WindowHeight int `json:"window_height"`
+}
+
+type AppConfig struct {
+	Theme  ThemeConfig  `json:"theme"`
+	Layout LayoutConfig `json:"layout"`
+}
+
+// LoadConfig reads the configuration file and returns the AppConfig.
+func LoadConfig(filePath string) (*AppConfig, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open config file: %w", err)
+	}
+	defer file.Close()
+
+	var config AppConfig
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	return &config, nil
+}
+
+// ValidateConfig checks if the configuration is valid.
+func ValidateConfig(config *AppConfig) error {
+	if config.Layout.WindowWidth <= 0 || config.Layout.WindowHeight <= 0 {
+		return fmt.Errorf("invalid window size in config")
+	}
+	colors := []string{
+		config.Theme.BackgroundColor,
+		config.Theme.TextColor,
+		config.Theme.ButtonColor,
+		config.Theme.HighlightColor,
+		config.Theme.WaveformColor,
+		config.Theme.KnobColor,
+	}
+	for _, hex := range colors {
+		if _, err := ParseHexColor(hex); err != nil {
+			return fmt.Errorf("invalid color '%s' in config: %w", hex, err)
+		}
+	}
+	return nil
+}
+
+// ParseHexColor parses a hex color string into a color.Color.
+func ParseHexColor(hex string) (color.Color, error) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return nil, fmt.Errorf("invalid hex color length")
+	}
+	var r, g, b uint8
+	n, err := fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+	if err != nil || n != 3 {
+		return nil, fmt.Errorf("invalid hex color format")
+	}
+	return color.NRGBA{R: r, G: g, B: b, A: 255}, nil
+}
+
+```
+---
+
+/home/megalith/megajam/gui/mixer.go:
+```go
+package gui
+
+import (
+	"log"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+	"megajam/knobs"
+)
+
+// CreateMixerSection creates the mixer interface with sliders and knobs.
+func CreateMixerSection() *fyne.Container {
+	// Crossfader slider
+	crossfader := widget.NewSlider(0, 100)
+	crossfader.SetValue(50)
+	crossfader.OnChanged = func(value float64) {
+		log.Printf("Crossfader value changed to: %.1f", value)
+		// Implement crossfader functionality here
+	}
+
+	// EQ Knobs with handlers
+	lowKnob := knobs.CreateKnobWithLabel("Low", -10, 10, func(value float64) {
+		log.Printf("Low EQ changed to: %.1f", value)
+		// Implement low EQ adjustment here
+	})
+	midKnob := knobs.CreateKnobWithLabel("Mid", -10, 10, func(value float64) {
+		log.Printf("Mid EQ changed to: %.1f", value)
+		// Implement mid EQ adjustment here
+	})
+	highKnob := knobs.CreateKnobWithLabel("High", -10, 10, func(value float64) {
+		log.Printf("High EQ changed to: %.1f", value)
+		// Implement high EQ adjustment here
+	})
+	volumeKnob := knobs.CreateKnobWithLabel("Volume", 0, 100, func(value float64) {
+		log.Printf("Volume changed to: %.1f", value)
+		// Implement volume adjustment here
+	})
+	balanceKnob := knobs.CreateKnobWithLabel("Balance", -50, 50, func(value float64) {
+		log.Printf("Balance changed to: %.1f", value)
+		// Implement balance adjustment here
+	})
+
+	return container.NewVBox(
+		widget.NewLabelWithStyle("Mixer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		container.NewHBox(lowKnob, midKnob, highKnob),    // EQ knobs
+		container.NewHBox(volumeKnob, balanceKnob),      // Volume and balance
+		container.NewVBox(widget.NewLabel("Crossfader"), crossfader), // Crossfader
+	)
+}
+
+```
+---
+
+/home/megalith/megajam/gui/browser.go:
+```go
+package gui
+
+import (
+    "bytes"
+    "fmt"
+    "image"
+    "log"
+    "os"
+    "strings"
+    "sync"
+
+    "megajam/playlist"
+
+    "fyne.io/fyne/v2"
+    "fyne.io/fyne/v2/canvas"
+    "fyne.io/fyne/v2/container"
+    "fyne.io/fyne/v2/dialog"
+    "fyne.io/fyne/v2/widget"
+    "github.com/dhowden/tag"
+    "github.com/gopxl/beep/v2/mp3"
+)
+
+// ExtractAlbumArt extracts album art from an MP3 file.
+func ExtractAlbumArt(filePath string) *canvas.Image {
+    f, err := os.Open(filePath)
+    if err != nil {
+        log.Printf("Error opening file %s: %v", filePath, err)
+        return nil
+    }
+    defer f.Close()
+
+    meta, err := tag.ReadFrom(f)
+    if err != nil {
+        log.Printf("Error reading tags from file %s: %v", filePath, err)
+        return nil
+    }
+
+    picture := meta.Picture()
+    if picture == nil {
+        log.Printf("No album art found in file %s", filePath)
+        return nil
+    }
+
+    img, _, err := image.Decode(bytes.NewReader(picture.Data))
+    if err != nil {
+        log.Printf("Error decoding album art from file %s: %v", filePath, err)
+        return nil
+    }
+
+    canvasImage := canvas.NewImageFromImage(img)
+    canvasImage.SetMinSize(fyne.NewSize(100, 100)) // Set a fixed size for thumbnails
+    return canvasImage
+}
+
+// ExtractMetadata extracts metadata (Title, Artist, Length) from an MP3 file.
+func ExtractMetadata(filePath string) (title, artist, length string) {
+    f, err := os.Open(filePath)
+    if err != nil {
+        log.Printf("Error opening file %s: %v", filePath, err)
+        return "Unknown", "Unknown", "Unknown"
+    }
+    defer f.Close()
+
+    meta, err := tag.ReadFrom(f)
+    if err != nil {
+        log.Printf("Error reading tags from file %s: %v", filePath, err)
+        return "Unknown", "Unknown", "Unknown"
+    }
+
+    title = meta.Title()
+    if title == "" {
+        title = "Unknown"
+    }
+
+    artist = meta.Artist()
+    if artist == "" {
+        artist = "Unknown"
+    }
+
+    // Attempt to get track length using Beep's mp3 decoder
+    streamer, format, err := mp3.Decode(f)
+    if err != nil {
+        log.Printf("Error decoding MP3 for length extraction %s: %v", filePath, err)
+        length = "Unknown"
+    } else {
+        defer streamer.Close()
+        totalSamples := streamer.Len()
+        if totalSamples == -1 {
+            length = "Unknown"
+        } else {
+            duration := float64(totalSamples) / float64(format.SampleRate)
+            minutes := int(duration) / 60
+            seconds := int(duration) % 60
+            length = fmt.Sprintf("%d:%02d", minutes, seconds)
+        }
+    }
+
+    return title, artist, length
+}
+
+// createEnhancedBrowserSection creates the playlist browser with enhanced features.
+// It returns the container and a channel to send the selected track index.
+func createEnhancedBrowserSection(playlist *playlist.Playlist, addTrackButton, removeTrackButton *widget.Button, myApp fyne.App, myWindow fyne.Window) (*fyne.Container, chan int) {
+    // Sidebar navigation
+    sidebar := container.NewVBox(
+        widget.NewButton("Deezer", func() {
+            dialog.ShowInformation("Info", "Deezer integration coming soon!", myWindow)
+        }),
+        widget.NewButton("TIDAL", func() {
+            dialog.ShowInformation("Info", "TIDAL integration coming soon!", myWindow)
+        }),
+        widget.NewButton("Beatport", func() {
+            dialog.ShowInformation("Info", "Beatport integration coming soon!", myWindow)
+        }),
+        widget.NewButton("SoundCloud", func() {
+            dialog.ShowInformation("Info", "SoundCloud integration coming soon!", myWindow)
+        }),
+        widget.NewButton("Offline Cache", func() {
+            dialog.ShowInformation("Info", "Offline Cache feature coming soon!", myWindow)
+        }),
+    )
+
+    // Search bar
+    searchEntry := widget.NewEntry()
+    searchEntry.SetPlaceHolder("Search...")
+    var filteredTracks []string
+    var mutex sync.Mutex
+
+    selectedTrackChan := make(chan int)
+
+    updateFilteredTracks := func(query string) {
+        mutex.Lock()
+        defer mutex.Unlock()
+        filteredTracks = []string{}
+        for _, track := range playlist.Tracks {
+            title, artist, _ := ExtractMetadata(track)
+            if strings.Contains(strings.ToLower(title), strings.ToLower(query)) ||
+                strings.Contains(strings.ToLower(artist), strings.ToLower(query)) {
+                filteredTracks = append(filteredTracks, track)
+            }
+        }
+        trackList.Refresh()
+    }
+
+    searchEntry.OnChanged = updateFilteredTracks
+
+    // Thumbnail generation (asynchronous)
+    thumbnailContainer := container.NewHBox()
+    var wg sync.WaitGroup
+    for _, trackPath := range playlist.Tracks {
+        wg.Add(1)
+        go func(tp string) {
+            defer wg.Done()
+            thumbnail := ExtractAlbumArt(tp)
+            if thumbnail != nil {
+                myApp.QueueUpdate(func() {
+                    thumbnailContainer.Add(thumbnail)
+                    thumbnailContainer.Refresh()
+                })
+            }
+        }(trackPath)
+    }
+    wg.Wait()
+    thumbnailScroll := container.NewHScroll(thumbnailContainer)
+
+    // Column headers
+    columnHeaders := container.NewGridWithColumns(3,
+        widget.NewLabelWithStyle("Title", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+        widget.NewLabelWithStyle("Artist", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+        widget.NewLabelWithStyle("Length", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+    )
+
+    // Track list with metadata using widget.List for selection
+    var selectedTrackIndex int = -1
+    trackList := widget.NewList(
+        func() int {
+            mutex.Lock()
+            defer mutex.Unlock()
+            if len(filteredTracks) > 0 {
+                return len(filteredTracks)
+            }
+            return len(playlist.Tracks)
+        },
+        func() fyne.CanvasObject {
+            return container.NewHBox(
+                widget.NewLabel("Title"),
+                widget.NewLabel("Artist"),
+                widget.NewLabel("Length"),
+            )
+        },
+        func(i widget.ListItemID, o fyne.CanvasObject) {
+            mutex.Lock()
+            defer mutex.Unlock()
+            var trackPath string
+            if len(filteredTracks) > 0 {
+                trackPath = filteredTracks[i]
+            } else {
+                trackPath = playlist.Tracks[i]
+            }
+            title, artist, length := ExtractMetadata(trackPath)
+            labels := o.(*fyne.Container).Objects
+            labels[0].(*widget.Label).SetText(title)
+            labels[1].(*widget.Label).SetText(artist)
+            labels[2].(*widget.Label).SetText(length)
+        },
+    )
+
+    trackList.OnSelected = func(id widget.ListItemID) {
+        mutex.Lock()
+        defer mutex.Unlock()
+        if len(filteredTracks) > 0 {
+            selectedTrackIndex = findIndex(playlist.Tracks, filteredTracks[id])
+        } else {
+            selectedTrackIndex = id
+        }
+        log.Printf("Selected track index: %d", selectedTrackIndex)
+        selectedTrackChan <- selectedTrackIndex
+    }
+
+    // Helper function to find the index of a track in the main playlist
+    findIndex := func(tracks []string, target string) int {
+        for i, track := range tracks {
+            if track == target {
+                return i
+            }
+        }
+        return -1
+    }
+
+    // Assemble browser layout
+    return container.NewBorder(
+        container.NewVBox(searchEntry, thumbnailScroll, columnHeaders), // Top: Search, thumbnails, and column headers
+        container.NewHBox(addTrackButton, removeTrackButton),           // Bottom: Add/Remove buttons
+        sidebar,                                                        // Left: Sidebar
+        nil,                                                            // Right: None
+        trackList,                                                      // Center: Track list
+    ), selectedTrackChan
+}
+
+```
+---
+
+/home/megalith/megajam/gui/themes.go:
+```go
+package gui
+
+import (
+	"image/color"
+	"log"
+
+	"megajam/config"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/theme"
+)
+
+// CustomTheme implements fyne.Theme based on user configuration.
+type CustomTheme struct {
+	config *config.ThemeConfig
+}
+
+// Ensure CustomTheme implements fyne.Theme.
+var _ fyne.Theme = (*CustomTheme)(nil)
+
+// NewCustomTheme creates a new CustomTheme with the given ThemeConfig.
+func NewCustomTheme(config *config.ThemeConfig) *CustomTheme {
+	return &CustomTheme{config: config}
+}
+
+// Color returns the color for the given name and variant.
+func (t *CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	switch name {
+	case theme.ColorNameBackground:
+		c, err := config.ParseHexColor(t.config.BackgroundColor)
+		if err != nil {
+			log.Printf("Error parsing BackgroundColor: %v", err)
+			return theme.DefaultTheme().Color(name, variant)
+		}
+		return c
+	case theme.ColorNameButton:
+		c, err := config.ParseHexColor(t.config.ButtonColor)
+		if err != nil {
+			log.Printf("Error parsing ButtonColor: %v", err)
+			return theme.DefaultTheme().Color(name, variant)
+		}
+		return c
+	case theme.ColorNameDisabledButton:
+		return color.NRGBA{R: 51, G: 51, B: 51, A: 255} // #333333
+	case theme.ColorNamePrimary:
+		c, err := config.ParseHexColor(t.config.HighlightColor)
+		if err != nil {
+			log.Printf("Error parsing HighlightColor: %v", err)
+			return theme.DefaultTheme().Color(name, variant)
+		}
+		return c
+	case theme.ColorNameForeground:
+		c, err := config.ParseHexColor(t.config.TextColor)
+		if err != nil {
+			log.Printf("Error parsing TextColor: %v", err)
+			return theme.DefaultTheme().Color(name, variant)
+		}
+		return c
+	default:
+		return theme.DefaultTheme().Color(name, variant)
+	}
+}
+
+// Icon returns the icon for the given name.
+func (t *CustomTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return theme.DefaultTheme().Icon(name)
+}
+
+// Font returns the font for the given text style.
+func (t *CustomTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return theme.DefaultTheme().Font(style)
+}
+
+// Size returns the size for the given size name.
+func (t *CustomTheme) Size(name fyne.ThemeSizeName) float32 {
+	return theme.DefaultTheme().Size(name)
+}
+
+```
+---
+
+/home/megalith/megajam/gui/deck.go:
+```go
+package gui
+
+import (
+    "image/color"
+    "log"
+
+    "fyne.io/fyne/v2"
+    "fyne.io/fyne/v2/canvas"
+    "fyne.io/fyne/v2/container"
+    "fyne.io/fyne/v2/widget"
+)
+
+// CreateDeckSection creates the deck interface with play/pause, sync, pitch control, and pads.
+func CreateDeckSection(deckName, songTitle, timeLeft, bpm string, mp3Image *canvas.Image, playPauseHandler func(), syncHandler func(), pitchHandler func(float64)) *fyne.Container {
+    // Sync Button
+    syncButton := widget.NewButton("Sync", func() {
+        if syncHandler != nil {
+            syncHandler()
+        } else {
+            log.Println("Sync handler not implemented")
+        }
+    })
+
+    // Circular Display
+    titleLabel := widget.NewLabelWithStyle(songTitle, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+    timeLabel := widget.NewLabel(timeLeft)
+    bpmLabel := widget.NewLabel("BPM: " + bpm)
+
+    if mp3Image == nil {
+        // Provide a default image if none is supplied
+        // You need to provide a default.png resource or handle it accordingly
+        mp3Image = canvas.NewImageFromResource(fyne.NewStaticResource("default.png", nil))
+        mp3Image.FillMode = canvas.ImageFillContain
+        mp3Image.SetMinSize(fyne.NewSize(100, 100))
+    }
+
+    mainDisplay := container.NewVBox(
+        mp3Image,
+        titleLabel,
+        timeLabel,
+        bpmLabel,
+    )
+    mainDisplayContainer := container.NewMax(
+        canvas.NewCircle(color.Black), // Circular background
+        mainDisplay,
+    )
+
+    // Pitch Control Slider
+    pitchSlider := widget.NewSlider(-10, 10) // Adjust range as needed
+    pitchSlider.Orientation = widget.Vertical
+    pitchSlider.OnChanged = pitchHandler
+    pitchControl := container.NewVBox(
+        widget.NewLabelWithStyle("Pitch Control", fyne.TextAlignCenter, fyne.TextStyle{}),
+        pitchSlider,
+    )
+
+    // Play/Pause Button
+    playPauseButton := widget.NewButton("Play", func() {
+        if playPauseHandler != nil {
+            playPauseHandler()
+        } else {
+            log.Println("Play/Pause handler not implemented")
+        }
+    })
+
+    // Pads
+    pads := container.NewGridWithColumns(4,
+        widget.NewButton("Pad 1", func() { log.Println("Pad 1 pressed") }),
+        widget.NewButton("Pad 2", func() { log.Println("Pad 2 pressed") }),
+        widget.NewButton("Pad 3", func() { log.Println("Pad 3 pressed") }),
+        widget.NewButton("Pad 4", func() { log.Println("Pad 4 pressed") }),
+        widget.NewButton("Pad 5", func() { log.Println("Pad 5 pressed") }),
+        widget.NewButton("Pad 6", func() { log.Println("Pad 6 pressed") }),
+        widget.NewButton("Pad 7", func() { log.Println("Pad 7 pressed") }),
+        widget.NewButton("Pad 8", func() { log.Println("Pad 8 pressed") }),
+    )
+
+    // Assemble Deck Layout
+    return container.NewVBox(
+        widget.NewLabelWithStyle(deckName, fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+        container.NewHBox(syncButton, widget.NewLabel("")),    // Sync button
+        container.NewHBox(mainDisplayContainer, pitchControl), // Main Display and Pitch Control
+        playPauseButton,                                       // Play/Pause button
+        container.NewVBox(widget.NewLabel("PADS"), pads),      // Pads section
+    )
+}
+
+```
+---
+
+/home/megalith/megajam/gui/gui.go:
+```go
+package gui
+
+import (
+    "log"
+
+    "megajam/config"
+    "megajam/playlist"
+    "megajam/player"
+
+    "fyne.io/fyne/v2"
+    "fyne.io/fyne/v2/app"
+    "fyne.io/fyne/v2/container"
+    "fyne.io/fyne/v2/dialog"
+    "fyne.io/fyne/v2/widget"
+)
+
+func CreateGUI() {
+    // Initialize Fyne app
+    myApp := app.NewWithID("com.example.megajam")
+    myWindow := myApp.NewWindow("Megajam DJ Controller")
+
+    // Load configuration
+    appConfig, err := config.LoadConfig("config/config.json")
+    if err != nil {
+        dialog.ShowError(err, myWindow)
+        myWindow.ShowAndRun()
+        return
+    }
+
+    // Validate configuration
+    err = config.ValidateConfig(appConfig)
+    if err != nil {
+        dialog.ShowError(err, myWindow)
+        myWindow.ShowAndRun()
+        return
+    }
+
+    // Apply custom theme
+    myApp.Settings().SetTheme(NewCustomTheme(&appConfig.Theme))
+
+    // Resize window based on configuration
+    myWindow.Resize(fyne.NewSize(
+        float32(appConfig.Layout.WindowWidth),
+        float32(appConfig.Layout.WindowHeight),
+    ))
+
+    // Initialize player with a default track
+    mp3Player, err := player.NewMP3Player("path/to/default.mp3") // Replace with actual default track path
+    if err != nil {
+        dialog.ShowError(err, myWindow)
+    }
+    defer mp3Player.Close()
+
+    // Initialize sections with handlers
+    leftDeck := CreateDeckSection(
+        "Left Deck",
+        "Track A",
+        "3:45",
+        "120",
+        nil, // mp3Image can be set dynamically
+        func() {
+            if mp3Player.Paused() {
+                mp3Player.Play()
+                // Update button text to "Pause" (Requires access to the button)
+                log.Println("Left Deck: Play")
+            } else {
+                mp3Player.Pause()
+                // Update button text to "Play" (Requires access to the button)
+                log.Println("Left Deck: Pause")
+            }
+        },
+        func() {
+            log.Println("Left Deck: Sync button clicked")
+            // Implement sync functionality here
+        },
+        func(value float64) {
+            mp3Player.SetVolume(value / 100) // Assuming volume range is 0-100
+            log.Printf("Left Deck: Volume set to %.1f%%", value)
+        },
+    )
+
+    rightDeck := CreateDeckSection(
+        "Right Deck",
+        "Track B",
+        "4:10",
+        "126",
+        nil, // mp3Image can be set dynamically
+        func() {
+            if mp3Player.Paused() {
+                mp3Player.Play()
+                // Update button text to "Pause" (Requires access to the button)
+                log.Println("Right Deck: Play")
+            } else {
+                mp3Player.Pause()
+                // Update button text to "Play" (Requires access to the button)
+                log.Println("Right Deck: Pause")
+            }
+        },
+        func() {
+            log.Println("Right Deck: Sync button clicked")
+            // Implement sync functionality here
+        },
+        func(value float64) {
+            mp3Player.SetVolume(value / 100) // Assuming volume range is 0-100
+            log.Printf("Right Deck: Volume set to %.1f%%", value)
+        },
+    )
+
+    mixer := CreateMixerSection()
+
+    // Initialize playlist browser
+    currentPlaylist := playlist.NewPlaylist("New Playlist")
+    addTrackButton := widget.NewButton("Add Track", func() {
+        dialog.ShowFileOpen(func(uri fyne.URIReadCloser, err error) {
+            if err != nil {
+                dialog.ShowError(err, myWindow)
+                return
+            }
+            if uri == nil {
+                return
+            }
+            err = currentPlaylist.AddTrack(uri.URI().Path())
+            if err != nil {
+                dialog.ShowError(err, myWindow)
+                return
+            }
+            dialog.ShowInformation("Success", "Track added to playlist!", myWindow)
+            // Refresh the browser section if necessary
+            // Implement a way to refresh thumbnails and track list
+        }, myWindow)
+    })
+    removeTrackButton := widget.NewButton("Remove Track", func() {
+        // Implement track removal logic using selectedTrackIndex
+        // This requires accessing the selectedTrackIndex received from the channel
+        // We'll set up a goroutine to listen to the channel
+    })
+    browserSection, selectedTrackChan := createEnhancedBrowserSection(currentPlaylist, addTrackButton, removeTrackButton, myApp, myWindow)
+
+    // Handle Remove Track Button Click
+    removeTrackButton.OnTapped = func() {
+        selectedIndex := -1
+        select {
+        case idx := <-selectedTrackChan:
+            selectedIndex = idx
+        default:
+            // No selection made
+        }
+
+        if selectedIndex >= 0 {
+            err := currentPlaylist.RemoveTrack(selectedIndex)
+            if err != nil {
+                dialog.ShowError(err, myWindow)
+                return
+            }
+            dialog.ShowInformation("Success", "Track removed from playlist!", myWindow)
+            log.Printf("Track at index %d removed from playlist", selectedIndex)
+            // Optionally, refresh the browser section
+            browserSection.Refresh()
+        } else {
+            dialog.ShowInformation("Info", "No track selected to remove.", myWindow)
+        }
+    }
+
+    // Layout components
+    mainLayout := container.NewBorder(
+        nil,                    // Top
+        browserSection,         // Bottom
+        nil,                    // Left
+        nil,                    // Right
+        container.NewHBox(leftDeck, mixer, rightDeck), // Center: Decks and mixer
+    )
+
+    // Set and show window content
+    myWindow.SetContent(mainLayout)
+    myWindow.ShowAndRun()
+}
+
+```
+---
+
+/home/megalith/megajam/knobs/knobs.go:
+```go
+package knobs
+
+import (
+	"fmt"
+	"image/color"
+	"math"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+)
+
+// Knob is a custom widget representing a rotary knob.
+type Knob struct {
+	widget.BaseWidget
+	Value    float64
+	Min      float64
+	Max      float64
+	OnChange func(float64)
+}
+
+// NewKnob creates a new Knob with specified min, max, and onChange handler.
+func NewKnob(min, max float64, onChange func(float64)) *Knob {
+	k := &Knob{Min: min, Max: max, Value: (max + min) / 2, OnChange: onChange}
+	k.ExtendBaseWidget(k)
+	return k
+}
+
+// CreateRenderer creates the renderer for the Knob.
+func (k *Knob) CreateRenderer() fyne.WidgetRenderer {
+	circle := canvas.NewCircle(color.NRGBA{R: 200, G: 200, B: 200, A: 255})
+	indicator := canvas.NewLine(color.NRGBA{R: 0, G: 0, B: 0, A: 255})
+	indicator.StrokeWidth = 2
+	label := canvas.NewText("", color.NRGBA{R: 0, G: 0, B: 0, A: 255})
+
+	return &knobRenderer{knob: k, circle: circle, indicator: indicator, label: label, objects: []fyne.CanvasObject{circle, indicator, label}}
+}
+
+type knobRenderer struct {
+	knob      *Knob
+	circle    *canvas.Circle
+	indicator *canvas.Line
+	label     *canvas.Text
+	objects   []fyne.CanvasObject
+}
+
+func (r *knobRenderer) Layout(size fyne.Size) {
+	r.circle.Resize(size)
+	r.circle.Move(fyne.NewPos(0, 0))
+
+	centerX, centerY := float64(size.Width/2), float64(size.Height/2)
+	radius := float64(size.Width / 2 * 0.8)
+	// Limit angle to 270 degrees (3/4 circle)
+	minAngle := -135.0 * (math.Pi / 180.0)
+	maxAngle := 135.0 * (math.Pi / 180.0)
+	normalizedValue := (r.knob.Value - r.knob.Min) / (r.knob.Max - r.knob.Min)
+	angle := minAngle + normalizedValue*(maxAngle-minAngle)
+
+	endX := centerX + radius*math.Sin(angle)
+	endY := centerY - radius*math.Cos(angle)
+
+	r.indicator.Position1 = fyne.NewPos(float32(centerX), float32(centerY))
+	r.indicator.Position2 = fyne.NewPos(float32(endX), float32(endY))
+
+	r.label.Text = fmt.Sprintf("%.1f", r.knob.Value)
+	r.label.Alignment = fyne.TextAlignCenter
+	r.label.Resize(fyne.NewSize(size.Width, 20))
+	r.label.Move(fyne.NewPos(0, size.Height-20))
+}
+
+func (r *knobRenderer) MinSize() fyne.Size {
+	return fyne.NewSize(50, 70)
+}
+
+func (r *knobRenderer) Refresh() {
+	canvas.Refresh(r.knob)
+}
+
+func (r *knobRenderer) BackgroundColor() color.Color {
+	return color.Transparent
+}
+
+func (r *knobRenderer) Objects() []fyne.CanvasObject {
+	return r.objects
+}
+
+func (r *knobRenderer) Destroy() {}
+
+// Dragged handles the drag event to adjust the knob's value.
+func (k *Knob) Dragged(event *fyne.DragEvent) {
+	centerX, centerY := float64(k.Size().Width)/2, float64(k.Size().Height)/2
+	dx, dy := float64(event.Position.X)-centerX, float64(event.Position.Y)-centerY
+	angle := math.Atan2(dy, dx)
+
+	// Adjust angle to be within -135 to +135 degrees
+	minAngle := -135.0 * (math.Pi / 180.0)
+	maxAngle := 135.0 * (math.Pi / 180.0)
+	if angle < minAngle {
+		angle = minAngle
+	} else if angle > maxAngle {
+		angle = maxAngle
+	}
+
+	// Normalize angle to [0,1]
+	normalized := (angle - minAngle) / (maxAngle - minAngle)
+	value := k.Min + normalized*(k.Max - k.Min)
+	value = math.Max(k.Min, math.Min(k.Max, value))
+
+	if value != k.Value {
+		k.Value = value
+		if k.OnChange != nil {
+			k.OnChange(k.Value)
+		}
+		k.Refresh()
+	}
+}
+
+// DragEnd handles the end of a drag event.
+func (k *Knob) DragEnd() {}
+
+// CreateKnobWithLabel creates a knob with an accompanying label.
+func CreateKnobWithLabel(label string, min, max float64, onChange func(float64)) *fyne.Container {
+	knob := NewKnob(min, max, onChange)
+	labelWidget := widget.NewLabel(label)
+	return container.NewVBox(labelWidget, knob)
+}
+
+```
+---
+
+/home/megalith/megajam/player/player.go:
+```go
+package player
+
+import (
+    "fmt"
+    "log"
+    "os"
+    "sync"
+    "time"
+
+    "github.com/gopxl/beep/v2"
+    "github.com/gopxl/beep/v2/mp3"
+    "github.com/gopxl/beep/v2/speaker"
+    "github.com/gopxl/beep/v2/volume"
+)
+
+type MP3Player struct {
+    streamer      beep.StreamSeekCloser
+    format        beep.Format
+    volumeCtrl    *volume.Volume
+    volumeMutex   sync.Mutex
+    playbackMutex sync.Mutex
+    paused        bool
+    done          chan bool
+}
+
+// NewMP3Player initializes a new MP3 player
+func NewMP3Player(filePath string) (*MP3Player, error) {
+    f, err := os.Open(filePath)
+    if err != nil {
+        return nil, fmt.Errorf("failed to open MP3 file: %v", err)
+    }
+
+    streamer, format, err := mp3.Decode(f)
+    if err != nil {
+        f.Close()
+        return nil, fmt.Errorf("failed to decode MP3: %v", err)
+    }
+
+    // Initialize speaker once
+    err = speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
+    if err != nil {
+        streamer.Close()
+        f.Close()
+        return nil, fmt.Errorf("failed to initialize speaker: %v", err)
+    }
+
+    // Create volume control streamer
+    volumeCtrl := volume.New(volume.Caps{
+        Min: -96, // Mute
+        Max: 0,    // Max volume
+    }, format.SampleRate, streamer)
+
+    return &MP3Player{
+        streamer:   streamer,
+        format:     format,
+        volumeCtrl: volumeCtrl,
+        paused:     true,
+        done:       make(chan bool),
+    }, nil
+}
+
+// Play starts or resumes playback
+func (p *MP3Player) Play() {
+    p.playbackMutex.Lock()
+    defer p.playbackMutex.Unlock()
+
+    if p.paused {
+        p.volumeMutex.Lock()
+        p.volumeCtrl.Paused = false
+        p.volumeMutex.Unlock()
+
+        speaker.Play(beep.Seq(p.volumeCtrl, beep.Callback(func() {
+            p.done <- true
+        })))
+        p.paused = false
+        log.Println("Playback started")
+    }
+}
+
+// Pause stops playback
+func (p *MP3Player) Pause() {
+    p.playbackMutex.Lock()
+    defer p.playbackMutex.Unlock()
+
+    if !p.paused {
+        p.volumeMutex.Lock()
+        p.volumeCtrl.Paused = true
+        p.volumeMutex.Unlock()
+
+        speaker.Clear()
+        p.paused = true
+        log.Println("Playback paused")
+    }
+}
+
+// Paused checks if the player is currently paused
+func (p *MP3Player) Paused() bool {
+    p.playbackMutex.Lock()
+    defer p.playbackMutex.Unlock()
+    return p.paused
+}
+
+// SetVolume adjusts the volume of the player
+// volumeLevel: 0.0 (mute) to 1.0 (max)
+func (p *MP3Player) SetVolume(volumeLevel float64) {
+    p.volumeMutex.Lock()
+    defer p.volumeMutex.Unlock()
+
+    // Convert 0.0-1.0 to -96 to 0 dB
+    db := -96 + volumeLevel*96
+    p.volumeCtrl.Gain = db
+    log.Printf("Volume set to %.1f dB", db)
+}
+
+// Close releases resources
+func (p *MP3Player) Close() {
+    p.streamer.Close()
+    speaker.Clear()
+    log.Println("MP3Player closed")
+}
+
+```
+---
+
+/home/megalith/megajam/main.go:
+```go
+package main
+
+import "megajam/gui"
+
+func main() {
+	gui.CreateGUI()
+}
+
+```
+---
+
+/home/megalith/megajam/playlist/playlist.go:
+```go
+package playlist
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sync"
+)
+
+type Playlist struct {
+	Name   string   `json:"name"`
+	Tracks []string `json:"tracks"`
+	mu     sync.Mutex
+}
+
+// NewPlaylist creates a new, empty playlist
+func NewPlaylist(name string) *Playlist {
+	return &Playlist{Name: name, Tracks: []string{}}
+}
+
+// AddTrack adds a new track to the playlist after validation
+func (p *Playlist) AddTrack(track string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, err := os.Stat(track); os.IsNotExist(err) {
+		return fmt.Errorf("track does not exist: %s", track)
+	}
+	// Additional format checks can be added here if needed
+
+	p.Tracks = append(p.Tracks, track)
+	return nil
+}
+
+// RemoveTrack removes a track from the playlist by index
+func (p *Playlist) RemoveTrack(index int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if index < 0 || index >= len(p.Tracks) {
+		return fmt.Errorf("invalid index")
+	}
+	p.Tracks = append(p.Tracks[:index], p.Tracks[index+1:]...)
+	return nil
+}
+
+// Save saves the playlist to a file
+func (p *Playlist) Save(filePath string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to serialize playlist: %v", err)
+	}
+	return os.WriteFile(filePath, data, 0644)
+}
+
+// Load loads a playlist from a file
+func Load(filePath string) (*Playlist, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read playlist file: %v", err)
+	}
+	var p Playlist
+	err = json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deserialize playlist: %v", err)
+	}
+	return &p, nil
+}
+
+```
+---
