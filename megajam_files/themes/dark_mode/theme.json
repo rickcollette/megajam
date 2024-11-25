@@ -1,0 +1,10 @@
+{
+    "background_color": "#1E1E1E",
+    "text_color": "#FFFFFF",
+    "button_color": "#3C3C3C",
+    "highlight_color": "#FF5733",
+    "waveform_color": "#33FF57",
+    "knob_color": "#3357FF",
+    "allowed_modes": ["party", "hardcore"]
+  }
+  

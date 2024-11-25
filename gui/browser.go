@@ -6,10 +6,11 @@ import (
 	"image"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
-	"megajam/playlist"
+	"megajam/db"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -17,7 +18,6 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/dhowden/tag"
-	"github.com/rickcollette/megasound/mp3"
 )
 
 // ExtractAlbumArt extracts album art from an MP3 file.
@@ -48,183 +48,140 @@ func ExtractAlbumArt(filePath string) *canvas.Image {
 	}
 
 	canvasImage := canvas.NewImageFromImage(img)
-	canvasImage.SetMinSize(fyne.NewSize(100, 100)) // Set a fixed size for thumbnails
+	canvasImage.SetMinSize(fyne.NewSize(100, 100)) // Fixed size for thumbnails
 	return canvasImage
 }
 
-// ExtractMetadata extracts metadata (Title, Artist, Length) from an MP3 file.
-func ExtractMetadata(filePath string) (title, artist, length string) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		log.Printf("Error opening file %s: %v", filePath, err)
-		return "Unknown", "Unknown", "Unknown"
-	}
-	defer f.Close()
+// createEnhancedBrowserSection creates the browser interface with search and track options.
+func createEnhancedBrowserSection(myWindow fyne.Window) *fyne.Container {
+	searchEntry := widget.NewEntry()
+	searchEntry.SetPlaceHolder("Search...")
 
-	meta, err := tag.ReadFrom(f)
-	if err != nil {
-		log.Printf("Error reading tags from file %s: %v", filePath, err)
-		return "Unknown", "Unknown", "Unknown"
+	var tracks []db.Track
+	if err := db.DB.Find(&tracks).Error; err != nil {
+		log.Printf("Error loading tracks: %v", err)
 	}
 
-	title = meta.Title()
-	if title == "" {
-		title = "Unknown"
-	}
+	filteredTracks := tracks
+	var mutex sync.Mutex
+	selectedTrackID := uint(0)
 
-	artist = meta.Artist()
-	if artist == "" {
-		artist = "Unknown"
-	}
+	trackList := widget.NewList(
+		func() int { return len(filteredTracks) },
+		func() fyne.CanvasObject {
+			return container.NewHBox(
+				widget.NewLabel("Title"),
+				widget.NewLabel("Artist"),
+			)
+		},
+		func(id widget.ListItemID, item fyne.CanvasObject) {
+			mutex.Lock()
+			defer mutex.Unlock()
+			if id < 0 || id >= len(filteredTracks) {
+				return
+			}
+			track := filteredTracks[id]
+			labels := item.(*fyne.Container).Objects
+			labels[0].(*widget.Label).SetText(track.Title)
+			labels[1].(*widget.Label).SetText(track.Artist)
+		},
+	)
 
-	streamer, format, err := mp3.Decode(f)
-	if err != nil {
-		log.Printf("Error decoding MP3 for length extraction %s: %v", filePath, err)
-		length = "Unknown"
-	} else {
-		defer streamer.Close()
-		totalSamples := streamer.Len()
-		if totalSamples == -1 {
-			length = "Unknown"
-		} else {
-			duration := float64(totalSamples) / float64(format.SampleRate)
-			minutes := int(duration) / 60
-			seconds := int(duration) % 60
-			length = fmt.Sprintf("%d:%02d", minutes, seconds)
+	trackList.OnSelected = func(id widget.ListItemID) {
+		if id >= 0 && id < len(filteredTracks) {
+			selectedTrackID = filteredTracks[id].ID
 		}
 	}
 
-	return title, artist, length
-}
-
-// createEnhancedBrowserSection creates the playlist browser with enhanced features.
-func createEnhancedBrowserSection(playlist *playlist.Playlist, addTrackButton, removeTrackButton *widget.Button, myWindow fyne.Window) (*fyne.Container, chan int) {
-	// Sidebar navigation
-	sidebar := container.NewVBox(
-		widget.NewButton("Deezer", func() {
-			dialog.ShowInformation("Info", "Deezer integration coming soon!", myWindow)
-		}),
-		widget.NewButton("TIDAL", func() {
-			dialog.ShowInformation("Info", "TIDAL integration coming soon!", myWindow)
-		}),
-		widget.NewButton("Beatport", func() {
-			dialog.ShowInformation("Info", "Beatport integration coming soon!", myWindow)
-		}),
-		widget.NewButton("SoundCloud", func() {
-			dialog.ShowInformation("Info", "SoundCloud integration coming soon!", myWindow)
-		}),
-		widget.NewButton("Offline Cache", func() {
-			dialog.ShowInformation("Info", "Offline Cache feature coming soon!", myWindow)
-		}),
-	)
-
-	searchEntry := widget.NewEntry()
-	searchEntry.SetPlaceHolder("Search...")
-	var filteredTracks []string
-	var mutex sync.Mutex
-	var trackList *widget.List
-
-	selectedTrackChan := make(chan int)
-
-	updateFilteredTracks := func(query string) {
+	searchEntry.OnChanged = func(query string) {
 		mutex.Lock()
 		defer mutex.Unlock()
-		filteredTracks = []string{}
-		for _, track := range playlist.Tracks {
-			title, artist, _ := ExtractMetadata(track)
-			if strings.Contains(strings.ToLower(title), strings.ToLower(query)) ||
-				strings.Contains(strings.ToLower(artist), strings.ToLower(query)) {
+		query = strings.ToLower(query)
+		filteredTracks = []db.Track{}
+		for _, track := range tracks {
+			if strings.Contains(strings.ToLower(track.Title), query) || strings.Contains(strings.ToLower(track.Artist), query) {
 				filteredTracks = append(filteredTracks, track)
 			}
 		}
 		trackList.Refresh()
 	}
 
-	searchEntry.OnChanged = updateFilteredTracks
-
-	// Thumbnail generation (asynchronous)
-	thumbnailContainer := container.NewHBox()
-	go func() {
-		for _, trackPath := range playlist.Tracks {
-			thumbnail := ExtractAlbumArt(trackPath)
-			if thumbnail != nil {
-				// Add thumbnail in the main thread to avoid race conditions
-				mutex.Lock()
-				thumbnailContainer.Add(thumbnail)
-				thumbnailContainer.Refresh()
-				mutex.Unlock()
-			}
+	addCueButton := widget.NewButton("Add Cue", func() {
+		if selectedTrackID == 0 {
+			dialog.ShowInformation("No Track Selected", "Please select a track to add a cue point.", myWindow)
+			return
 		}
-	}()
 
-	thumbnailScroll := container.NewHScroll(thumbnailContainer)
+		// Create fields for the form.
+		timeEntry := widget.NewEntry()
+		nameEntry := widget.NewEntry()
 
-	columnHeaders := container.NewGridWithColumns(3,
-		widget.NewLabelWithStyle("Title", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabelWithStyle("Artist", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabelWithStyle("Length", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-	)
-
-	var selectedTrackIndex int = -1
-	trackList = widget.NewList(
-		func() int {
-			mutex.Lock()
-			defer mutex.Unlock()
-			if len(filteredTracks) > 0 {
-				return len(filteredTracks)
+		// Show the dialog form.
+		dialog.ShowForm("Add Cue Point", "Add", "Cancel", []*widget.FormItem{
+			widget.NewFormItem("Time (seconds)", timeEntry),
+			widget.NewFormItem("Name", nameEntry),
+		}, func(confirm bool) {
+			if !confirm {
+				return
 			}
-			return len(playlist.Tracks)
-		},
-		func() fyne.CanvasObject {
-			return container.NewHBox(
-				widget.NewLabel("Title"),
-				widget.NewLabel("Artist"),
-				widget.NewLabel("Length"),
-			)
-		},
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			mutex.Lock()
-			defer mutex.Unlock()
-			var trackPath string
-			if len(filteredTracks) > 0 {
-				trackPath = filteredTracks[i]
+
+			// Parse time input.
+			time, err := strconv.ParseFloat(timeEntry.Text, 64)
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("invalid time format"), myWindow)
+				return
+			}
+
+			// Add the cue point to the database.
+			if err := db.AddCuePoint(selectedTrackID, nameEntry.Text, time); err != nil {
+				dialog.ShowError(err, myWindow)
 			} else {
-				trackPath = playlist.Tracks[i]
+				dialog.ShowInformation("Success", "Cue point added successfully.", myWindow)
 			}
-			title, artist, length := ExtractMetadata(trackPath)
-			labels := o.(*fyne.Container).Objects
-			labels[0].(*widget.Label).SetText(title)
-			labels[1].(*widget.Label).SetText(artist)
-			labels[2].(*widget.Label).SetText(length)
-		},
-	)
+		}, myWindow)
+	})
 
-	trackList.OnSelected = func(id widget.ListItemID) {
-		mutex.Lock()
-		defer mutex.Unlock()
-		if len(filteredTracks) > 0 {
-			selectedTrackIndex = findIndex(playlist.Tracks, filteredTracks[id])
-		} else {
-			selectedTrackIndex = id
+	addLoopButton := widget.NewButton("Add Loop", func() {
+		if selectedTrackID == 0 {
+			dialog.ShowInformation("No Track Selected", "Please select a track to add a loop.", myWindow)
+			return
 		}
-		log.Printf("Selected track index: %d", selectedTrackIndex)
-		selectedTrackChan <- selectedTrackIndex
-	}
 
-	return container.NewBorder(
-		container.NewVBox(searchEntry, thumbnailScroll, columnHeaders),
-		container.NewHBox(addTrackButton, removeTrackButton),
-		sidebar,
-		nil,
+		// Create fields for the form.
+		startEntry := widget.NewEntry()
+		endEntry := widget.NewEntry()
+		nameEntry := widget.NewEntry()
+
+		// Show the dialog form.
+		dialog.ShowForm("Add Loop", "Add", "Cancel", []*widget.FormItem{
+			widget.NewFormItem("Start Time (seconds)", startEntry),
+			widget.NewFormItem("End Time (seconds)", endEntry),
+			widget.NewFormItem("Name", nameEntry),
+		}, func(confirm bool) {
+			if !confirm {
+				return
+			}
+
+			// Parse start and end times.
+			start, err1 := strconv.ParseFloat(startEntry.Text, 64)
+			end, err2 := strconv.ParseFloat(endEntry.Text, 64)
+			if err1 != nil || err2 != nil || start >= end {
+				dialog.ShowError(fmt.Errorf("invalid start or end time"), myWindow)
+				return
+			}
+
+			// Add the loop to the database.
+			if err := db.AddLoop(selectedTrackID, nameEntry.Text, start, end); err != nil {
+				dialog.ShowError(err, myWindow)
+			} else {
+				dialog.ShowInformation("Success", "Loop added successfully.", myWindow)
+			}
+		}, myWindow)
+	})
+
+	return container.NewVBox(
+		searchEntry,
 		trackList,
-	), selectedTrackChan
-}
-
-func findIndex(tracks []string, target string) int {
-	for i, track := range tracks {
-		if track == target {
-			return i
-		}
-	}
-	return -1
+		container.NewHBox(addCueButton, addLoopButton),
+	)
 }

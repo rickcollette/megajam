@@ -1,0 +1,9 @@
+{
+    "database_path": "data/music_library.db",
+    "theme_name": "dark_mode",
+    "mode": "hardcore",
+    "layout": {
+      "window_width": 1280,
+      "window_height": 720
+    }
+  }

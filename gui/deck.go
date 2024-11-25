@@ -40,7 +40,7 @@ func CreateDeckSection(deckName, songTitle, timeLeft, bpm string, mp3Image *canv
         timeLabel,
         bpmLabel,
     )
-    mainDisplayContainer := container.NewMax(
+    mainDisplayContainer := container.NewStack(
         canvas.NewCircle(color.Black), // Circular background
         mainDisplay,
     )
